@@ -1,0 +1,171 @@
+---
+- name: Добавление записи argocd.platform.local в /etc/hosts
+  ansible.builtin.lineinfile:
+    path: /etc/hosts
+    # Заменяем IP на адрес Nginx на PVE или Traefik (в прошлый раз был 172.16.100.1)
+    line: "{{ nginx_pve_ip | default('172.16.100.1') }} argocd.platform.local"
+    regexp: '.*argocd\.platform\.local$'
+    state: present
+
+- name: Получение токена ArgoCD из HashiCorp Vault (KV v2)
+  ansible.builtin.uri:
+    url: "{{ vault_api_url }}/v1/kv/data/platform/backstage/argocd"
+    method: GET
+    headers:
+      X-Vault-Token: "{{ vault_api_token }}"
+    status_code: [200]
+  register: vault_argocd_response
+  delegate_to: localhost
+
+- name: Сохранение токена ArgoCD в переменную (fact)
+  ansible.builtin.set_fact:
+    argocd_token: "{{ vault_argocd_response.json.data.data.token }}"
+
+- name: Генерация случайного надежного пароля для базы данных
+  ansible.builtin.set_fact:
+    backstage_db_password: "{{ lookup('ansible.builtin.password', '/dev/null chars=ascii_letters,digits length=24') }}"
+  # Флаг run_once гарантирует, что если бы у нас было несколько хостов, пароль сгенерировался бы один раз
+  run_once: true
+
+- name: Сохранение сгенерированного пароля в HashiCorp Vault (KV v2)
+  ansible.builtin.uri:
+    url: "{{ vault_api_url }}/v1/kv/data/platform/backstage/database"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ vault_api_token }}"
+    body_format: json
+    body:
+      data:
+        username: "backstage"
+        password: "{{ backstage_db_password }}"
+    status_code: [200, 204]
+  delegate_to: localhost
+
+- name: Обновление кэша пакетов apt
+  apt:
+    update_cache: yes
+    cache_valid_time: 3600
+
+- name: Установка базовых зависимостей для работы с репозиториями
+  apt:
+    name:
+      - apt-transport-https
+      - ca-certificates
+      - curl
+      - gnupg
+      - lsb-release
+    state: present
+
+- name: Добавление официального GPG-ключа Docker
+  apt_key:
+    url: https://download.docker.com/linux/ubuntu/gpg
+    state: present
+
+- name: Подключение официального репозитория Docker
+  apt_repository:
+    repo: "deb [arch=amd64] https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable"
+    state: present
+
+- name: Установка Docker Engine и плагина Docker Compose
+  apt:
+    name:
+      - docker-ce
+      - docker-ce-cli
+      - containerd.io
+      - docker-compose-plugin
+    state: present
+
+- name: Создание рабочей директории для деплоя Backstage
+  file:
+    path: /opt/backstage
+    state: directory
+    mode: '0755'
+
+- name: Создание директории для ключей apt
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    mode: '0755'
+
+- name: Скачивание GPG-ключа NodeSource
+  ansible.builtin.get_url:
+    url: https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key
+    dest: /etc/apt/keyrings/nodesource.gpg
+    mode: '0644'
+
+- name: Добавление репозитория Node.js 22.x
+  ansible.builtin.apt_repository:
+    repo: "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_22.x nodistro main"
+    state: present
+    filename: nodesource
+
+- name: Установка Node.js и системных зависимостей сборки
+  ansible.builtin.apt:
+    name:
+      - nodejs
+      - build-essential
+      - python3
+      - pkg-config
+      - libsecret-1-dev
+    state: latest
+    update_cache: yes
+
+- name: Установка глобального yarn
+  community.general.npm:
+    name: yarn
+    global: yes
+
+- name: Проверяем, создан ли уже код Backstage
+  ansible.builtin.stat:
+    path: /opt/backstage/my-app/package.json
+  register: app_code
+
+- name: Инициализация базового приложения Backstage (если его нет)
+  ansible.builtin.command:
+    cmd: echo "my-app" | npx -y @backstage/create-app@latest --skip-install
+    chdir: /opt/backstage
+  when: not app_code.stat.exists
+
+# По умолчанию в шаблоне Backstage уже лежит готовый правильный Dockerfile
+
+- name: Генерация основного конфигурационного файла app-config.production.yaml
+  template:
+    src: app-config.production.yaml.j2
+    dest: /opt/backstage/my-app/app-config.production.yaml
+    mode: '0600'
+
+- name: Configuration шаблона docker-compose.yml
+  template:
+    src: docker-compose.yml.j2
+    dest: /opt/backstage/docker-compose.yml
+    mode: '0644'
+
+- name: Проверяем, собран ли продакшн-бандл Backstage
+  ansible.builtin.stat:
+    path: /opt/backstage/my-app/packages/backend/dist/bundle.tar.gz
+  register: backstage_bundle
+
+- name: Установка зависимостей Backstage (Yarn)
+  ansible.builtin.shell:
+    cmd: yarn install
+    chdir: /opt/backstage/my-app
+  when: not backstage_bundle.stat.exists
+
+- name: Компиляция TypeScript
+  ansible.builtin.shell:
+    cmd: yarn tsc
+    chdir: /opt/backstage/my-app
+  when: not backstage_bundle.stat.exists
+
+- name: Сборка продакшн-бандла бэкенда
+  ansible.builtin.shell:
+    cmd: yarn build:backend
+    chdir: /opt/backstage/my-app
+  when: not backstage_bundle.stat.exists
+
+- name: Запуск связки Backstage и PostgreSQL через Docker Compose
+  ansible.builtin.command:
+    cmd: docker compose up -d
+    chdir: /opt/backstage
+  register: compose_out
+  changed_when: "'Started' in compose_out.stdout or 'Created' in compose_out.stdout"

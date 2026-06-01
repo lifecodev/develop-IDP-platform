@@ -1,0 +1,17 @@
+---
+- name: Настройка красивого приветствия (MOTD) через шаблон
+  template:
+    src: motd.j2
+    dest: /etc/motd
+    mode: '0644'
+
+- name: Установка prometheus-node-exporter
+  apt:
+    name: prometheus-node-exporter
+    state: present
+
+- name: Обеспечение автозапуска службы node-exporter
+  systemd:
+    name: prometheus-node-exporter
+    state: started
+    enabled: yes

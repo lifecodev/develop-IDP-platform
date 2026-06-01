@@ -1,0 +1,47 @@
+app:
+  title: Diplom IDP
+  baseUrl: https://backstage.devops.local
+
+backend:
+  baseUrl: https://backstage.devops.local
+  listen: ':7007'
+  database:
+    client: pg
+    connection:
+      host: ${POSTGRES_HOST}
+      port: ${POSTGRES_PORT}
+      user: ${POSTGRES_USER}
+      password: ${POSTGRES_PASSWORD}
+
+integrations:
+  gitlab:
+    - host: gitlab.devops.local
+      apiBaseUrl: https://gitlab.devops.local/api/v4
+      baseUrl: https://gitlab.devops.local
+      token: ${AUTH_GITLAB_TOKEN}
+
+auth:
+  environment: production
+  providers:
+    gitlab:
+      production:
+        clientId: ${AUTH_GITLAB_CLIENT_ID}
+        clientSecret: ${AUTH_GITLAB_CLIENT_SECRET}
+        audience: https://gitlab.devops.local
+        callbackUrl: https://backstage.devops.local/api/auth/gitlab/handler/frame
+        signIn:
+          resolvers:
+            - resolver: usernameMatchingUserEntityName
+
+catalog:
+  rules:
+    - allow: [Component, API, Location, Template, Resource, User, Group]
+  providers:
+    gitlab:
+      production:
+        host: gitlab.devops.local
+        orgEnabled: true
+        entityFilename: backstage.yaml
+        schedule:
+          frequency: { minutes: 1 }
+          timeout: { minutes: 1 }

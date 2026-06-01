@@ -1,0 +1,30 @@
+---
+- name: Починка apt репозиториев для LXC контейнеров
+  ansible.builtin.copy:
+    dest: /etc/apt/sources.list
+    content: |
+      deb http://old-releases.ubuntu.com/ubuntu oracular main restricted universe multiverse
+      deb http://old-releases.ubuntu.com/ubuntu oracular-updates main restricted universe multiverse
+      deb http://old-releases.ubuntu.com/ubuntu oracular-security main restricted universe multiverse
+    owner: root
+    group: root
+    mode: '0644'
+  when: "'infra_lxc' in group_names"
+  
+- name: Обновление кэша пакетов apt
+  apt:
+    update_cache: yes
+    cache_valid_time: 3600
+
+- name: Установка минимального набора системных утилит
+  apt:
+    name:
+      - curl
+      - htop
+      - git
+      - tmux
+    state: present
+
+- name: Синхронизация системного времени (Таймзона МСК)
+  timezone:
+    name: Europe/Moscow

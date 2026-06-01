@@ -1,0 +1,83 @@
+---
+- name: Установка системных зависимостей для GitLab
+  apt:
+    name:
+      - curl
+      - openssh-server
+      - ca-certificates
+      - tzdata
+      - perl
+    state: present
+    update_cache: yes
+
+- name: Скачивание и добавление официального репозитория GitLab CE
+  shell: |
+    curl -sS https://packages.gitlab.com/install/repositories/gitlab/gitlab-ce/script.deb.sh | bash
+  environment:
+    os: "ubuntu"
+    dist: "noble"
+  args:
+    creates: /etc/apt/sources.list.d/gitlab_gitlab-ce.list
+
+- name: Установка GitLab CE
+  apt:
+    name: gitlab-ce
+    state: present
+    update_cache: yes
+  environment:
+    # Здесь указываем твой внутренний URL или IP, по которому будет доступен интерфейс
+    EXTERNAL_URL: "http://172.16.30.2"
+
+- name: Применение конфигурации GitLab (Первый запуск)
+  command: gitlab-ctl reconfigure
+  args:
+    creates: /etc/gitlab/initial_root_password
+
+- name: Ожидание генерации файла с начальным паролем
+  wait_for:
+    path: /etc/gitlab/initial_root_password
+    timeout: 300
+
+- name: Чтение временного пароля GitLab
+  slurp:
+    src: /etc/gitlab/initial_root_password
+  register: gitlab_temp_password_raw
+
+- name: Сохранение временного пароля в переменную
+  set_fact:
+    initial_root_pass: "{{ (gitlab_temp_password_raw.content | b64decode) | regex_search('Password: (.*)', '\\1') | first }}"
+
+- name: Генерация нового постоянного Enterprise-пароля для GitLab
+  set_fact:
+    gitlab_final_root_password: "{{ lookup('password', '/dev/null chars=ascii_letters,digits length=24') }}"
+
+- name: Выполнение сброса пароля без интерактивного ввода
+  command: >
+    gitlab-rake gitlab:password:reset[root]
+  args:
+    # Передаем пароль дважды (сам пароль и его подтверждение) в stdin
+    stdin: |
+      {{ gitlab_final_root_password }}
+      {{ gitlab_final_root_password }}
+  register: rake_result
+  changed_when: "'Password successfully updated' in rake_result.stdout"
+
+- name: Пуш постоянного пароля GitLab в Vault KV-хранилище
+  uri:
+    url: "{{ vault_api_url }}/v1/kv/data/platform/gitlab"  # Укажи IP твоего Vault и путь
+    method: POST
+    headers:
+      X-Vault-Token: "{{ vault_api_token }}"  # Подставь сюда свой токен
+      Content-Type: "application/json"
+    body_format: json
+    body:
+      data:
+        username: "root"
+        password: "{{ gitlab_final_root_password }}"
+    status_code: [200, 204]
+  delegate_to: localhost # Делаем запрос от имени управляющей ноды, если у виртуалки GitLab нет прямого доступа
+
+#- name: Безопасное удаление временного файла с паролем с диска
+#  file:
+#    path: /etc/gitlab/initial_root_password
+#    state: absent

@@ -1,0 +1,53 @@
+---
+- name: Установка системных зависимостей
+  apt:
+    name: [curl, ca-certificates]
+    state: present
+    update_cache: yes
+
+- name: Установка Мастер-ноды K3s (Control-Plane)
+  shell: |
+    curl -sfL https://get.k3s.io | sh -s - server \
+    --write-kubeconfig-mode 644 \
+    --node-ip={{ k8s_master_ip }}
+  args:
+    creates: /usr/local/bin/k3s
+
+- name: Создание локальной папки .kube в домашней директории пользователя
+  file:
+    path: "/home/{{ ansible_user }}/.kube"
+    state: directory
+    mode: '0755'
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+
+- name: Настройка прав для kubectl (чтобы работал без sudo)
+  copy:
+    src: /etc/rancher/k3s/k3s.yaml
+    dest: "~{{ ansible_user }}/.kube/config"
+    remote_src: yes
+    owner: "{{ ansible_user }}"
+    mode: '0600'
+
+- name: Чтение сгенерированного токена кластера
+  slurp:
+    src: /var/lib/rancher/k3s/server/node-token
+  register: k3s_token_raw
+
+- name: Сохранение токена в память Ansible
+  set_fact:
+    k3s_cluster_token: "{{ k3s_token_raw.content | b64decode | trim }}"
+
+- name: Безопасный пуш токена K3s кластера в движок KV Vault
+  uri:
+    url: "{{ vault_api_url }}/v1/kv/data/platform/k8s"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ vault_api_token }}"
+      Content-Type: "application/json"
+    body_format: json
+    body:
+      data:
+        cluster_token: "{{ k3s_cluster_token }}"
+    status_code: [200, 204]
+  delegate_to: localhost

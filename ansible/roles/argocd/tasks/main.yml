@@ -1,0 +1,89 @@
+---
+- name: Установка системного пакета python3-kubernetes
+  apt:
+    name: python3-kubernetes
+    state: present
+    update_cache: yes
+  become: true
+
+- name: Создание пространства имен для ArgoCD
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    name: argocd
+    api_version: v1
+    kind: Namespace
+    state: present
+
+- name: Применение официального манифеста ArgoCD
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    src: https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+    namespace: argocd
+    state: present
+
+- name: Ожидание полной готовности сервера ArgoCD
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    kind: Pod
+    namespace: argocd
+    label_selectors:
+      - app.kubernetes.io/name=argocd-server
+  register: argocd_server_pods
+  until: >
+    argocd_server_pods.resources | length > 0 and
+    argocd_server_pods.resources[0].status.phase == "Running"
+  retries: 24
+  delay: 10
+
+- name: Извлечение автоматически сгенерированного секрета ArgoCD
+  kubernetes.core.k8s_info:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    kind: Secret
+    name: argocd-initial-admin-secret
+    namespace: argocd
+  register: argocd_secret
+
+- name: Безопасный пуш учетных данных ArgoCD в движок KV Vault
+  uri:
+    url: "{{ vault_api_url }}/v1/kv/data/platform/argocd"
+    method: POST
+    headers:
+      X-Vault-Token: "{{ vault_api_token }}"
+      Content-Type: "application/json"
+    body_format: json
+    body:
+      data:
+        username: "admin"
+        password: "{{ argocd_secret.resources[0].data.password | b64decode }}"
+    status_code: [200, 204]
+  delegate_to: localhost
+  when: argocd_secret.resources | length > 0
+
+- name: Копирование шаблона Ingress для ArgoCD на мастер-ноду
+  template:
+    src: argocd-ingress.yaml.j2
+    dest: /etc/rancher/k3s/argocd-ingress.yaml
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: '0644'
+
+- name: Configure ArgoCD cmd-params for Insecure mode (Fix redirect loops)
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: argocd-cmd-params-cm
+        namespace: argocd
+      data:
+        # Вот он, тот самый параметр из доки!
+        server.insecure: "true"
+
+
+- name: Применение манифеста Ingress из локального файла
+  kubernetes.core.k8s:
+    kubeconfig: /etc/rancher/k3s/k3s.yaml
+    src: /etc/rancher/k3s/argocd-ingress.yaml
+    state: present

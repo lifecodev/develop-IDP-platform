@@ -1,0 +1,84 @@
+# Этап 1: Абсолютно все машины получают базовую настройку ОС
+- name: Накатывание системной базы на всю инфраструктуру
+  hosts: all
+  gather_facts: true
+  roles:
+    - core_OS
+  tags: bootstrap
+
+# Этап 2: Целевые узлы (кроме ansible) получают мониторинг и приветствие
+- name: Развертывание мониторинга на целевые хосты
+  hosts: "all:!ansible"
+  gather_facts: true
+  roles:
+    - base_node
+  tags: bootstrap
+
+# Этап 3: Серверная часть мониторинга ТОЛЬКО на управляющую ноду
+- name: Развертывание центрального сервера мониторинга
+  hosts: ansible
+  gather_facts: true
+  roles:
+    - monitoring_server
+  tags: bootstrap
+
+# Этап 4: Централизованное хранилище секретов ТОЛЬКО на ноду vault
+- name: Развертывание HashiCorp Vault
+  hosts: vault
+  gather_facts: true
+  roles:
+    - hashicorp_vault
+  tags: bootstrap
+
+# Этап 5: Система контроля версий на gitlab сервер
+- name: Развертывание GitLab CE
+  hosts: gitlab
+  gather_facts: true
+  roles:
+    - gitlab_ce
+  tags: deploy_ce
+
+# Этап 6: GitLab Runner на gitlab runner (можно масштабировать на несколько машин)
+- name: Развертывание GitLab Runner
+  hosts: runners
+  gather_facts: true
+  roles:
+    - gitlab_runner
+  tags: deploy_runner
+
+# ==============================================================================
+# ЭТАП 7. Развертывание отказоустойчивого оркестратора K8s (на базе K3s) + GitOps
+# ==============================================================================
+
+- name: Инициализация Control-Plane K8s и деплой ArgoCD
+  hosts: k8s_masters
+  become: yes
+  roles:
+    - k8s_master
+  tags: k8s
+
+- name: Масштабирование кластера, Подключение Worker-нод
+  hosts: k8s_workers
+  become: yes
+  roles:
+    - k8s_worker
+  tags: k8s
+
+- name: Этап 7.3 — Развертывание и настройка инструментов GitOps
+  hosts: k8s_masters
+  become: yes
+  roles:
+    - argocd
+  tags: argocd
+
+# Этап 8. Развёртывание Backstage
+- name: Развертывание Internal Developer Portal (Backstage)
+  hosts: backstage
+  become: yes
+  vars:
+    backstage_host: "172.16.30.3"
+    nginx_pve_ip: "172.16.100.1" # Сюда IP своего внешнего прокси
+    argocd_domain: "argocd.devops.local"
+  roles:
+    - backstage
+  tags: backstage

@@ -1,0 +1,30 @@
+---
+- name: Установка необходимых системных пакетов
+  apt:
+    name:
+      - curl
+      - ca-certificates
+      - gnupg
+    state: present
+    update_cache: yes
+
+- name: Добавление официального репозитория GitLab Runner
+  shell: |
+    curl -L "https://packages.gitlab.com/install/repositories/runner/gitlab-runner/script.deb.sh" | bash
+  args:
+    creates: /etc/apt/sources.list.d/gitlab_gitlab-runner.list
+
+- name: Установка пакета GitLab Runner
+  apt:
+    name: gitlab-runner
+    state: present
+    update_cache: yes
+
+- name: Проверка наличия Docker на хосте
+  stat:
+    path: /usr/bin/docker
+  register: docker_binary
+
+- name: Автоматическая установка Docker (если отсутствует)
+  shell: curl -fsSL https://get.docker.com | sh
+  when: not docker_binary.stat.exists

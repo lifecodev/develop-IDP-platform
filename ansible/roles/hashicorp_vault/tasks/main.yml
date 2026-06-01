@@ -1,0 +1,46 @@
+---
+- name: Установка базовых системных зависимостей
+  apt:
+    name:
+      - wget
+      - daemon
+    state: present
+    update_cache: yes
+
+- name: Скачивание официального DEB-пакета HashiCorp Vault 1.18
+  get_url:
+    url: https://releases.hashicorp.com/vault/1.18.4/vault_1.18.4-1_amd64.deb
+    dest: /tmp/vault_amd64.deb
+    mode: '0644'
+
+- name: Установка Vault из скачанного пакета
+  apt:
+    deb: /tmp/vault_amd64.deb
+    state: present
+
+- name: Удаление временного установочного пакета
+  file:
+    path: /tmp/vault_amd64.deb
+    state: absent
+
+- name: Создание директории для данных Vault с правильными правами
+  file:
+    path: /opt/vault/data
+    state: directory
+    owner: vault
+    group: vault
+    mode: '0750'
+
+- name: Накат конфигурационного файла Vault
+  template:
+    src: vault.hcl.j2
+    dest: /etc/vault.d/vault.hcl
+    owner: vault
+    group: vault
+    mode: '0640'
+
+- name: Включение автозапуска и запуск службы Vault
+  systemd:
+    name: vault
+    state: restarted
+    enabled: yes

@@ -1,0 +1,23 @@
+---
+- name: Проверка наличия K3s на воркере
+  stat:
+    path: /usr/local/bin/k3s
+  register: k3s_binary
+
+- name: Безопасное чтение токена K3s из движка KV Vault
+  uri:
+    url: "{{ vault_api_url }}/v1/kv/data/platform/k8s"
+    method: GET
+    headers:
+      X-Vault-Token: "{{ vault_api_token }}"
+    status_code: 200
+  register: vault_k8s_secret
+  delegate_to: localhost
+
+- name: Выделение токена из ответа Vault в переменную
+  set_fact:
+    k3s_token_from_vault: "{{ vault_k8s_secret.json.data.data.cluster_token }}"
+
+- name: Подключение Воркер-ноды к мастеру с токеном из Vault
+  shell: |
+    curl -sfL https://get.k3s.io | K3S_URL="https://{{ k8s_master_ip }}:6443" K3S_TOKEN="{{ k3s_token_from_vault | trim }}" sh -s - agent

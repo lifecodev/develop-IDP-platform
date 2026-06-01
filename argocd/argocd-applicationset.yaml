@@ -1,0 +1,40 @@
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: idp-projects-set
+  namespace: argocd
+spec:
+  goTemplate: true
+  goTemplateOptions: ["missingkey=error"]
+  generators:
+  - scmProvider:
+      cloneProtocol: https
+      gitlab:
+        # Адрес GitLab
+        api: https://gitlab.devops.local
+        # ID группы в GitLab
+        insecure: true
+        group: "12"
+        tokenRef:
+          secretName: gitlab-token
+          key: gitlab-token
+
+        # Фильтр: брать все репозитории
+        #allBranches: false
+      requeueAfterSeconds: 60 # Сканировать каждую минуту
+  template:
+    metadata:
+      name: '{{ .repository }}'
+    spec:
+      project: default
+      source:
+        repoURL: '{{ .url }}'
+        targetRevision: main
+        path: 'k8s/' # Ожидает, что манифесты лежат в корне
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: default
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
